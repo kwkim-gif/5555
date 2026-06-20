@@ -7,11 +7,14 @@ echo ============================================================
 echo.
 
 :: ============================================================
-:: CONFIG - edit these if the repo moves
+:: CONFIG
 :: ============================================================
 set REPO_URL=https://github.com/kwkim-gif/5555.git
 set REPO_BRANCH=claude/wonderful-dijkstra-ht66iw
-set SOURCE_DIR=%~dp0src
+set BUILD_ROOT=%~dp0
+set SOURCE_DIR=%BUILD_ROOT%src
+set PKG_DIR=%BUILD_ROOT%dist\AISTTStudio_Package
+set ICON_PATH=%SOURCE_DIR%\assets\icon.ico
 :: ============================================================
 
 :: --- Step 1: Check Python ---
@@ -41,7 +44,7 @@ if %errorlevel% equ 0 (
 :USE_GIT
 echo [*] git found - cloning repository...
 if exist "%SOURCE_DIR%\.git" (
-    echo [*] Repository already exists - pulling latest...
+    echo [*] Repo exists - pulling latest...
     git -C "%SOURCE_DIR%" fetch origin %REPO_BRANCH%
     git -C "%SOURCE_DIR%" checkout %REPO_BRANCH%
     git -C "%SOURCE_DIR%" pull origin %REPO_BRANCH%
@@ -49,47 +52,54 @@ if exist "%SOURCE_DIR%\.git" (
     git clone --branch %REPO_BRANCH% --depth 1 %REPO_URL% "%SOURCE_DIR%"
 )
 if %errorlevel% neq 0 (
-    echo [ERROR] git clone/pull failed.
+    echo [ERROR] git failed.
     pause
     exit /b 1
 )
-echo [OK] Source downloaded via git.
+echo [OK] Source ready.
 goto :BUILD
 
 :USE_CURL
-echo [*] git not found - downloading via curl (zip archive)...
+echo [*] git not found - downloading zip via curl...
 set ZIP_URL=https://github.com/kwkim-gif/5555/archive/refs/heads/claude/wonderful-dijkstra-ht66iw.zip
-set ZIP_FILE=%~dp0_source.zip
+set ZIP_FILE=%BUILD_ROOT%_source.zip
 
 curl -L -o "%ZIP_FILE%" "%ZIP_URL%"
 if %errorlevel% neq 0 (
-    echo [ERROR] curl download failed.
-    echo         Install git from https://git-scm.com and retry.
+    echo [ERROR] curl download failed. Install git from https://git-scm.com
     pause
     exit /b 1
 )
-
-echo [*] Extracting archive...
-if exist "%SOURCE_DIR%" rmdir /s /q "%SOURCE_DIR%"
-powershell -NoProfile -Command "Expand-Archive -Path '%ZIP_FILE%' -DestinationPath '%~dp0_extracted' -Force"
-:: GitHub zip extracts to "reponame-branchname" folder - rename it
-for /d %%D in ("%~dp0_extracted\*") do (
+echo [*] Extracting...
+if exist "%BUILD_ROOT%_extracted" rmdir /s /q "%BUILD_ROOT%_extracted"
+if exist "%SOURCE_DIR%"           rmdir /s /q "%SOURCE_DIR%"
+powershell -NoProfile -Command "Expand-Archive -Path '%ZIP_FILE%' -DestinationPath '%BUILD_ROOT%_extracted' -Force"
+for /d %%D in ("%BUILD_ROOT%_extracted\*") do (
     move "%%D" "%SOURCE_DIR%"
-    goto :extracted
+    goto :curl_done
 )
-:extracted
+:curl_done
 del "%ZIP_FILE%" 2>nul
-rmdir /s /q "%~dp0_extracted" 2>nul
-echo [OK] Source extracted.
+rmdir /s /q "%BUILD_ROOT%_extracted" 2>nul
+echo [OK] Source ready.
 
 :BUILD
-:: --- Step 3: Create build venv ---
+:: Verify source exists
+if not exist "%SOURCE_DIR%\launcher.py" (
+    echo [ERROR] launcher.py not found in %SOURCE_DIR%
+    echo         Download may have failed. Check your internet connection.
+    pause
+    exit /b 1
+)
+echo [OK] Source verified: %SOURCE_DIR%\launcher.py
+
+:: --- Step 3: Build venv ---
 echo.
 echo [*] Setting up build environment...
-if not exist "%~dp0.build_venv\Scripts\activate.bat" (
-    python -m venv "%~dp0.build_venv"
+if not exist "%BUILD_ROOT%.build_venv\Scripts\activate.bat" (
+    python -m venv "%BUILD_ROOT%.build_venv"
 )
-call "%~dp0.build_venv\Scripts\activate.bat"
+call "%BUILD_ROOT%.build_venv\Scripts\activate.bat"
 
 :: --- Step 4: Install build tools ---
 echo [*] Installing PyInstaller and Pillow...
@@ -100,30 +110,72 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-:: --- Step 5: Generate icon ---
-if not exist "%SOURCE_DIR%\assets\icon.ico" (
-    echo [*] Generating icon...
-    mkdir "%SOURCE_DIR%\assets" 2>nul
-    python "%SOURCE_DIR%\make_icon.py"
+:: --- Step 5: Generate icon (explicit absolute path) ---
+echo [*] Generating icon: %ICON_PATH%
+mkdir "%SOURCE_DIR%\assets" 2>nul
+
+python -c "
+import sys, os
+sys.path.insert(0, r'%SOURCE_DIR%')
+output = r'%ICON_PATH%'
+os.makedirs(os.path.dirname(output), exist_ok=True)
+try:
+    from PIL import Image, ImageDraw, ImageFont
+    SIZE = 256
+    img = Image.new('RGBA', (SIZE, SIZE), (0,0,0,0))
+    d = ImageDraw.Draw(img)
+    d.ellipse([4,4,SIZE-4,SIZE-4], fill=(25,118,210,255))
+    d.ellipse([80,60,176,156], fill=(255,255,255,255))
+    d.line([(128,156),(128,200)], fill=(255,255,255,255), width=10)
+    d.line([(100,200),(156,200)], fill=(255,255,255,255), width=10)
+    try:
+        from PIL import ImageFont
+        font = ImageFont.truetype('arial.ttf', 36)
+    except:
+        font = ImageFont.load_default()
+    d.text((100,210), 'AI', font=font, fill=(255,255,255,220))
+    sizes = [16,24,32,48,64,128,256]
+    icons = [img.resize((s,s), Image.LANCZOS) for s in sizes]
+    icons[0].save(output, format='ICO', sizes=[(s,s) for s in sizes], append_images=icons[1:])
+    print('[OK] Icon saved:', output)
+except Exception as e:
+    print('[WARN] Icon generation failed:', e)
+    # Create a minimal 32x32 ICO as fallback
+    try:
+        img = Image.new('RGB', (32,32), (25,118,210))
+        img.save(output, format='ICO')
+        print('[OK] Fallback icon saved:', output)
+    except Exception as e2:
+        print('[ERROR] Could not create any icon:', e2)
+        sys.exit(1)
+"
+
+if not exist "%ICON_PATH%" (
+    echo [ERROR] Icon file was not created: %ICON_PATH%
+    pause
+    exit /b 1
 )
+echo [OK] Icon ready.
 
 :: --- Step 6: PyInstaller build ---
 echo.
-echo [*] Building AISTTStudio.exe with PyInstaller...
+echo [*] Building AISTTStudio.exe...
 echo.
+
+if exist "%BUILD_ROOT%build_tmp" rmdir /s /q "%BUILD_ROOT%build_tmp"
 
 pyinstaller ^
     --onefile ^
     --windowed ^
     --name "AISTTStudio" ^
-    --icon "%SOURCE_DIR%\assets\icon.ico" ^
+    --icon "%ICON_PATH%" ^
     --add-data "%SOURCE_DIR%\assets;assets" ^
     --hidden-import tkinter ^
     --hidden-import tkinter.ttk ^
     --version-file "%SOURCE_DIR%\version_info.txt" ^
-    --distpath "%~dp0dist" ^
-    --workpath "%~dp0build_tmp" ^
-    --specpath "%~dp0build_tmp" ^
+    --distpath "%BUILD_ROOT%dist" ^
+    --workpath "%BUILD_ROOT%build_tmp" ^
+    --specpath "%BUILD_ROOT%build_tmp" ^
     "%SOURCE_DIR%\launcher.py"
 
 if %errorlevel% neq 0 (
@@ -131,40 +183,37 @@ if %errorlevel% neq 0 (
     pause
     exit /b 1
 )
+echo [OK] AISTTStudio.exe created.
 
-:: --- Step 7: Assemble distribution package ---
+:: --- Step 7: Assemble package ---
 echo.
 echo [*] Assembling distribution package...
 
-set PKG=%~dp0dist\AISTTStudio_Package
-if exist "%PKG%" rmdir /s /q "%PKG%"
-mkdir "%PKG%"
+if exist "%PKG_DIR%" rmdir /s /q "%PKG_DIR%"
+mkdir "%PKG_DIR%"
 
-copy "%~dp0dist\AISTTStudio.exe" "%PKG%\"
+copy "%BUILD_ROOT%dist\AISTTStudio.exe" "%PKG_DIR%\"
 
-xcopy /e /i /q "%SOURCE_DIR%\engines"   "%PKG%\engines\"
-xcopy /e /i /q "%SOURCE_DIR%\audio"     "%PKG%\audio\"
-xcopy /e /i /q "%SOURCE_DIR%\subtitle"  "%PKG%\subtitle\"
-xcopy /e /i /q "%SOURCE_DIR%\ui"        "%PKG%\ui\"
-xcopy /e /i /q "%SOURCE_DIR%\workers"   "%PKG%\workers\"
-xcopy /e /i /q "%SOURCE_DIR%\benchmark" "%PKG%\benchmark\"
-xcopy /e /i /q "%SOURCE_DIR%\config"    "%PKG%\config\"
+xcopy /e /i /q "%SOURCE_DIR%\engines"   "%PKG_DIR%\engines\"
+xcopy /e /i /q "%SOURCE_DIR%\audio"     "%PKG_DIR%\audio\"
+xcopy /e /i /q "%SOURCE_DIR%\subtitle"  "%PKG_DIR%\subtitle\"
+xcopy /e /i /q "%SOURCE_DIR%\ui"        "%PKG_DIR%\ui\"
+xcopy /e /i /q "%SOURCE_DIR%\workers"   "%PKG_DIR%\workers\"
+xcopy /e /i /q "%SOURCE_DIR%\benchmark" "%PKG_DIR%\benchmark\"
+xcopy /e /i /q "%SOURCE_DIR%\config"    "%PKG_DIR%\config\"
 
-copy "%SOURCE_DIR%\app.py"           "%PKG%\"
-copy "%SOURCE_DIR%\requirements.txt" "%PKG%\"
+copy "%SOURCE_DIR%\app.py"           "%PKG_DIR%\"
+copy "%SOURCE_DIR%\requirements.txt" "%PKG_DIR%\"
 
-mkdir "%PKG%\logs"       2>nul
-mkdir "%PKG%\error_logs" 2>nul
-mkdir "%PKG%\output"     2>nul
+mkdir "%PKG_DIR%\logs"       2>nul
+mkdir "%PKG_DIR%\error_logs" 2>nul
+mkdir "%PKG_DIR%\output"     2>nul
 
 echo.
 echo ============================================================
 echo  Build complete!
-echo  Package : dist\AISTTStudio_Package\
-echo  Launcher: dist\AISTTStudio_Package\AISTTStudio.exe
-echo.
-echo  To create an installer (.exe):
-echo    ISCC.exe installer.iss
+echo  Folder : %PKG_DIR%
+echo  Exe    : %PKG_DIR%\AISTTStudio.exe
 echo ============================================================
 echo.
 
