@@ -38,8 +38,9 @@ REPO_RAW = "https://raw.githubusercontent.com/kwkim-gif/5555/claude/wonderful-di
 
 # Files downloaded if missing (relative path -> raw URL)
 REQUIRED_FILES: dict[str, str] = {
-    "requirements.txt": f"{REPO_RAW}/requirements.txt",
-    "app.py":           f"{REPO_RAW}/app.py",
+    "requirements.txt":        f"{REPO_RAW}/requirements.txt",
+    "requirements_models.txt": f"{REPO_RAW}/requirements_models.txt",
+    "app.py":                  f"{REPO_RAW}/app.py",
 }
 
 # Directories mirrored from GitHub if missing
@@ -202,7 +203,7 @@ class SetupWindow:
         self._run([str(PYTHON_BIN), "-m", "pip", "install", "--upgrade", "pip", "--quiet"],
                   "pip upgrade failed")
 
-        # 5. Install packages
+        # 5. Install core packages
         self.set_status("Installing packages... (first run, may take several minutes)")
         self.log(f"Requirements: {REQ_FILE}")
         self._run(
@@ -211,7 +212,11 @@ class SetupWindow:
             "Package installation failed",
             stream=True,
         )
-        self.log("All packages installed.")
+        self.log("Core packages installed.")
+
+        # 6. Optional model packages (failure is non-fatal)
+        self._install_optional_models()
+
         self.set_status("Setup complete! Launching app...")
         self.set_progress_done()
 
@@ -241,6 +246,41 @@ class SetupWindow:
                         self._download(url, dest)
 
         self.log("Source files ready.")
+
+    def _install_optional_models(self) -> None:
+        """
+        Try to install model-specific packages.
+        Each is attempted individually so one failure does not block others.
+        """
+        self.set_status("Installing optional model packages (failures are skipped)...")
+
+        optional: list[tuple[str, list[str]]] = [
+            # ReazonSpeech K2-v2 (not on PyPI - GitHub source)
+            ("reazonspeech-k2-v2",
+             [str(PYTHON_BIN), "-m", "pip", "install",
+              "git+https://github.com/reazon-research/reazonspeech.git#subdirectory=espnet",
+              "--quiet"]),
+            # NVIDIA NeMo (large, may take a long time)
+            ("nemo_toolkit[asr]",
+             [str(PYTHON_BIN), "-m", "pip", "install",
+              "nemo_toolkit[asr]", "--quiet"]),
+        ]
+
+        flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        for name, cmd in optional:
+            self.log(f"Optional: installing {name}...")
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True,
+                                        encoding="utf-8", errors="replace",
+                                        creationflags=flags, timeout=600)
+                if result.returncode == 0:
+                    self.log(f"  OK: {name}")
+                else:
+                    self.log(f"  Skipped {name} (not available on PyPI - manual install may be needed)")
+            except subprocess.TimeoutExpired:
+                self.log(f"  Timeout: {name} (skipped)")
+            except Exception as exc:
+                self.log(f"  Skipped {name}: {exc}")
 
     def _download(self, url: str, dest: Path) -> None:
         try:

@@ -1,0 +1,22 @@
+# ============================================================
+# AI STT Studio - Optional Model Requirements
+# Install AFTER the main requirements.txt
+# ============================================================
+
+# --- ReazonSpeech K2-v2 ---
+# Install from GitHub (not on PyPI):
+#   pip install git+https://github.com/reazon-research/reazonspeech.git#subdirectory=espnet
+# Or via official source:
+#   pip install reazonspeech-k2-v2 --extra-index-url https://pypi.reazon.jp/simple/
+
+# --- NVIDIA Parakeet (NeMo) ---
+# Large install (~3 GB). Install from NVIDIA NGC:
+#   pip install nemo_toolkit[asr]
+# Requires: libsndfile, sox, Cython pre-installed
+
+# --- CUDA PyTorch (GPU acceleration) ---
+# Replace CPU torch with CUDA build matching your driver:
+# CUDA 12.4 (RTX 3060~5090):
+#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu124
+# CUDA 11.8:
+#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu118
