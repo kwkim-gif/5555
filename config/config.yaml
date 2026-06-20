@@ -1,0 +1,64 @@
+app:
+  name: "AI STT Studio"
+  version: "1.0.0"
+  language: "ja"
+
+model:
+  last_used: "kotoba-whisper-v2"
+  available:
+    - "reazonspeech-k2-v2"
+    - "parakeet-tdt_ctc-0.6b-ja"
+    - "kotoba-whisper-v2"
+
+output:
+  directory: "./output"
+  formats:
+    - "srt"
+    - "txt"
+  json_output: false
+
+cuda:
+  enabled: true
+  auto_detect: true
+  device: "auto"
+  fp16: true
+  bf16: false
+  batch_size: 8
+
+preprocessing:
+  noise_reduction: false
+  volume_normalization: true
+  silence_removal: false
+  vad_enabled: true
+  resample_16k: true
+  chunk_duration_seconds: 600
+
+decoding:
+  beam_size: 5
+  temperature: 0.0
+  best_of: 5
+  patience: 1.0
+  no_speech_threshold: 0.6
+  logprob_threshold: -1.0
+  compression_ratio_threshold: 2.4
+  condition_on_previous_text: false
+  hallucination_silence_threshold: 2.0
+
+timestamp:
+  word_timestamps: true
+  min_segment_duration: 0.5
+  max_segment_duration: 15.0
+  merge_threshold: 0.5
+
+vad:
+  threshold: 0.5
+  min_speech_duration_ms: 250
+  min_silence_duration_ms: 500
+  window_size_samples: 1024
+
+logging:
+  level: "INFO"
+  log_dir: "logs"
+  error_log_dir: "error_logs"
+  max_file_size_mb: 50
+  retention_days: 7
