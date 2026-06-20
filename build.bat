@@ -31,8 +31,6 @@ echo [OK] Python %PY_VER%
 :: --- Step 2: Download source from GitHub ---
 echo.
 echo [*] Downloading source from GitHub...
-echo     %REPO_URL%  (branch: %REPO_BRANCH%)
-echo.
 
 git --version > nul 2>&1
 if %errorlevel% equ 0 (
@@ -66,7 +64,7 @@ set ZIP_FILE=%BUILD_ROOT%_source.zip
 
 curl -L -o "%ZIP_FILE%" "%ZIP_URL%"
 if %errorlevel% neq 0 (
-    echo [ERROR] curl download failed. Install git from https://git-scm.com
+    echo [ERROR] Download failed. Install git from https://git-scm.com
     pause
     exit /b 1
 )
@@ -84,14 +82,14 @@ rmdir /s /q "%BUILD_ROOT%_extracted" 2>nul
 echo [OK] Source ready.
 
 :BUILD
-:: Verify source exists
+:: Verify key source file exists
 if not exist "%SOURCE_DIR%\launcher.py" (
     echo [ERROR] launcher.py not found in %SOURCE_DIR%
     echo         Download may have failed. Check your internet connection.
     pause
     exit /b 1
 )
-echo [OK] Source verified: %SOURCE_DIR%\launcher.py
+echo [OK] Source verified.
 
 :: --- Step 3: Build venv ---
 echo.
@@ -110,45 +108,10 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-:: --- Step 5: Generate icon (explicit absolute path) ---
-echo [*] Generating icon: %ICON_PATH%
+:: --- Step 5: Generate icon via make_icon.py (path passed as argument) ---
+echo [*] Generating icon...
 mkdir "%SOURCE_DIR%\assets" 2>nul
-
-python -c "
-import sys, os
-sys.path.insert(0, r'%SOURCE_DIR%')
-output = r'%ICON_PATH%'
-os.makedirs(os.path.dirname(output), exist_ok=True)
-try:
-    from PIL import Image, ImageDraw, ImageFont
-    SIZE = 256
-    img = Image.new('RGBA', (SIZE, SIZE), (0,0,0,0))
-    d = ImageDraw.Draw(img)
-    d.ellipse([4,4,SIZE-4,SIZE-4], fill=(25,118,210,255))
-    d.ellipse([80,60,176,156], fill=(255,255,255,255))
-    d.line([(128,156),(128,200)], fill=(255,255,255,255), width=10)
-    d.line([(100,200),(156,200)], fill=(255,255,255,255), width=10)
-    try:
-        from PIL import ImageFont
-        font = ImageFont.truetype('arial.ttf', 36)
-    except:
-        font = ImageFont.load_default()
-    d.text((100,210), 'AI', font=font, fill=(255,255,255,220))
-    sizes = [16,24,32,48,64,128,256]
-    icons = [img.resize((s,s), Image.LANCZOS) for s in sizes]
-    icons[0].save(output, format='ICO', sizes=[(s,s) for s in sizes], append_images=icons[1:])
-    print('[OK] Icon saved:', output)
-except Exception as e:
-    print('[WARN] Icon generation failed:', e)
-    # Create a minimal 32x32 ICO as fallback
-    try:
-        img = Image.new('RGB', (32,32), (25,118,210))
-        img.save(output, format='ICO')
-        print('[OK] Fallback icon saved:', output)
-    except Exception as e2:
-        print('[ERROR] Could not create any icon:', e2)
-        sys.exit(1)
-"
+python "%SOURCE_DIR%\make_icon.py" "%ICON_PATH%"
 
 if not exist "%ICON_PATH%" (
     echo [ERROR] Icon file was not created: %ICON_PATH%
