@@ -1,4 +1,4 @@
-"""Main application window."""
+"""Main application window — drag-and-drop file list, CUDA monitor, queue-based transcription."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import Optional
 
 import torch
 from loguru import logger
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QAction, QColor, QFont, QPalette
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -18,7 +18,10 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -30,28 +33,99 @@ from PySide6.QtWidgets import (
 )
 
 from audio.preprocess import PreprocessConfig
-from engines import ENGINE_REGISTRY
+from engines import ENGINE_REGISTRY, UNAVAILABLE_ENGINES
 from engines.base_engine import EngineConfig
 from ui.settings_dialog import SettingsDialog
 from workers.transcription_worker import TranscriptionWorker
 
 
-class VRAMBar(QWidget):
-    """Compact VRAM usage indicator."""
+# ──────────────────────────────────────────────────────────────────────────
+# Drag-and-Drop File List
+# ──────────────────────────────────────────────────────────────────────────
 
+SUPPORTED_EXTS = {
+    ".mp4", ".mkv", ".avi", ".mov", ".ts",
+    ".wav", ".mp3", ".m4a", ".flac", ".ogg",
+}
+
+
+class FileListWidget(QListWidget):
+    """QListWidget that accepts file drops and shows right-click remove menu."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+        self.setDragDropMode(QListWidget.DropOnly)
+        self.setSelectionMode(QListWidget.ExtendedSelection)
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_context_menu)
+        self.setToolTip("Drag & drop media files here, or right-click to remove")
+
+    def dragEnterEvent(self, event) -> None:
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event) -> None:
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event) -> None:
+        for url in event.mimeData().urls():
+            path = Path(url.toLocalFile())
+            if path.is_file() and path.suffix.lower() in SUPPORTED_EXTS:
+                self._add_path(str(path))
+        event.acceptProposedAction()
+
+    def _add_path(self, path: str) -> None:
+        # Avoid duplicates
+        for i in range(self.count()):
+            if self.item(i).data(Qt.UserRole) == path:
+                return
+        item = QListWidgetItem(Path(path).name)
+        item.setData(Qt.UserRole, path)
+        item.setToolTip(path)
+        self.addItem(item)
+
+    def add_files(self, paths: list[str]) -> None:
+        for p in paths:
+            self._add_path(p)
+
+    def all_paths(self) -> list[str]:
+        return [self.item(i).data(Qt.UserRole) for i in range(self.count())]
+
+    def selected_paths(self) -> list[str]:
+        return [item.data(Qt.UserRole) for item in self.selectedItems()]
+
+    def _show_context_menu(self, pos) -> None:
+        menu = QMenu(self)
+        remove_sel = menu.addAction("Remove selected")
+        remove_all = menu.addAction("Clear all")
+        action = menu.exec(self.mapToGlobal(pos))
+        if action == remove_sel:
+            for item in self.selectedItems():
+                self.takeItem(self.row(item))
+        elif action == remove_all:
+            self.clear()
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# VRAM Bar
+# ──────────────────────────────────────────────────────────────────────────
+
+class VRAMBar(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         self._label = QLabel("VRAM: N/A")
-        from PySide6.QtWidgets import QProgressBar
         self._bar = QProgressBar()
         self._bar.setRange(0, 100)
-        self._bar.setMaximumWidth(150)
+        self._bar.setMaximumWidth(160)
         self._bar.setMaximumHeight(14)
         layout.addWidget(self._label)
         layout.addWidget(self._bar)
-
         self._total_mb = 0.0
         if torch.cuda.is_available():
             self._total_mb = torch.cuda.get_device_properties(0).total_memory / 1024 ** 2
@@ -65,19 +139,21 @@ class VRAMBar(QWidget):
             self._label.setText(f"VRAM: {used_mb:.0f} MB")
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# Main Window
+# ──────────────────────────────────────────────────────────────────────────
+
 class MainWindow(QMainWindow):
-    """AI STT Studio main window."""
-
-    SUPPORTED_EXTS = "*.mp4 *.mkv *.avi *.mov *.ts *.wav *.mp3 *.m4a *.flac *.ogg"
-
     def __init__(self, app_config: dict) -> None:
         super().__init__()
         self._cfg = app_config
         self._worker: Optional[TranscriptionWorker] = None
+        self._queue: list[str] = []          # remaining files to process
         self._settings: dict = self._build_default_settings()
 
         self.setWindowTitle("AI STT Studio")
-        self.resize(1280, 800)
+        self.resize(1340, 860)
+        self.setAcceptDrops(True)
 
         self._build_menu()
         self._build_central()
@@ -88,6 +164,25 @@ class MainWindow(QMainWindow):
         self._vram_timer.timeout.connect(self._poll_vram)
         self._vram_timer.start(2000)
 
+        # Warn about unavailable engines after UI is ready
+        QTimer.singleShot(200, self._warn_unavailable_engines)
+
+    # ------------------------------------------------------------------
+    # Drag-and-drop on main window (files dropped outside the list)
+    # ------------------------------------------------------------------
+
+    def dragEnterEvent(self, event) -> None:
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event) -> None:
+        paths = [
+            url.toLocalFile() for url in event.mimeData().urls()
+            if Path(url.toLocalFile()).suffix.lower() in SUPPORTED_EXTS
+        ]
+        if paths:
+            self._file_list.add_files(paths)
+
     # ------------------------------------------------------------------
     # Menu
     # ------------------------------------------------------------------
@@ -96,9 +191,9 @@ class MainWindow(QMainWindow):
         menubar = self.menuBar()
 
         file_menu = menubar.addMenu("File")
-        open_act = QAction("Open File", self)
+        open_act = QAction("Add Files", self)
         open_act.setShortcut("Ctrl+O")
-        open_act.triggered.connect(self._pick_file)
+        open_act.triggered.connect(self._pick_files)
         file_menu.addAction(open_act)
         file_menu.addSeparator()
         quit_act = QAction("Exit", self)
@@ -126,17 +221,19 @@ class MainWindow(QMainWindow):
     def _build_central(self) -> None:
         splitter = QSplitter(Qt.Horizontal)
 
+        # ── Left panel ────────────────────────────────────────────────
         left = QWidget()
-        left_layout = QVBoxLayout(left)
-        left_layout.setAlignment(Qt.AlignTop)
-        left_layout.addWidget(self._grp_file())
-        left_layout.addWidget(self._grp_model())
-        left_layout.addWidget(self._grp_output())
-        left_layout.addWidget(self._grp_preprocess())
-        left_layout.addStretch()
+        ll = QVBoxLayout(left)
+        ll.setAlignment(Qt.AlignTop)
+        ll.addWidget(self._grp_files())
+        ll.addWidget(self._grp_model())
+        ll.addWidget(self._grp_output())
+        ll.addWidget(self._grp_preprocess())
+        ll.addStretch()
 
+        # ── Right panel ───────────────────────────────────────────────
         right = QWidget()
-        right_layout = QVBoxLayout(right)
+        rl = QVBoxLayout(right)
 
         log_grp = QGroupBox("Live Log")
         lg = QVBoxLayout(log_grp)
@@ -144,7 +241,7 @@ class MainWindow(QMainWindow):
         self._log_view.setReadOnly(True)
         self._log_view.setFont(QFont("Consolas", 9))
         lg.addWidget(self._log_view)
-        right_layout.addWidget(log_grp, 3)
+        rl.addWidget(log_grp, 3)
 
         result_grp = QGroupBox("Transcription Result")
         rg = QVBoxLayout(result_grp)
@@ -152,20 +249,21 @@ class MainWindow(QMainWindow):
         self._result_view.setReadOnly(True)
         self._result_view.setFont(QFont("Yu Gothic", 11))
         rg.addWidget(self._result_view)
-        right_layout.addWidget(result_grp, 2)
+        rl.addWidget(result_grp, 2)
 
         splitter.addWidget(left)
         splitter.addWidget(right)
-        splitter.setSizes([380, 860])
+        splitter.setSizes([400, 900])
 
         root = QWidget()
         root_layout = QVBoxLayout(root)
         root_layout.addWidget(splitter)
 
+        # ── Bottom controls ───────────────────────────────────────────
         bottom = QHBoxLayout()
         self._start_btn = QPushButton("Start Transcription")
         self._start_btn.setMinimumHeight(40)
-        self._start_btn.clicked.connect(self._start_transcription)
+        self._start_btn.clicked.connect(self._start_queue)
         self._start_btn.setStyleSheet("font-size:14px; font-weight:bold;")
 
         self._stop_btn = QPushButton("Stop")
@@ -181,10 +279,14 @@ class MainWindow(QMainWindow):
         self._progress_bar.setRange(0, 100)
         self._progress_bar.setValue(0)
 
+        self._queue_label = QLabel("Queue: 0 files")
+        self._queue_label.setStyleSheet("color: #aaaaaa;")
+
         bottom.addWidget(self._start_btn)
         bottom.addWidget(self._stop_btn)
         bottom.addWidget(self._settings_btn)
         bottom.addWidget(self._progress_bar, 1)
+        bottom.addWidget(self._queue_label)
         root_layout.addLayout(bottom)
         self.setCentralWidget(root)
 
@@ -192,39 +294,68 @@ class MainWindow(QMainWindow):
     # Left panel groups
     # ------------------------------------------------------------------
 
-    def _grp_file(self) -> QGroupBox:
-        grp = QGroupBox("Input File")
+    def _grp_files(self) -> QGroupBox:
+        grp = QGroupBox("Input Files  (drag & drop or browse)")
         layout = QVBoxLayout(grp)
+
+        self._file_list = FileListWidget()
+        self._file_list.setMinimumHeight(130)
+        layout.addWidget(self._file_list)
+
         row = QHBoxLayout()
-        self._file_edit = QLineEdit()
-        self._file_edit.setPlaceholderText("Select a video or audio file...")
-        self._file_edit.setReadOnly(True)
-        btn = QPushButton("Browse")
-        btn.clicked.connect(self._pick_file)
-        row.addWidget(self._file_edit)
-        row.addWidget(btn)
+        btn_add = QPushButton("Add Files")
+        btn_add.clicked.connect(self._pick_files)
+        btn_clr = QPushButton("Clear")
+        btn_clr.clicked.connect(self._file_list.clear)
+        row.addWidget(btn_add)
+        row.addWidget(btn_clr)
         layout.addLayout(row)
-        self._file_info_label = QLabel("")
-        self._file_info_label.setWordWrap(True)
-        layout.addWidget(self._file_info_label)
         return grp
 
     def _grp_model(self) -> QGroupBox:
         grp = QGroupBox("Model")
         layout = QVBoxLayout(grp)
         self._model_combo = QComboBox()
-        self._model_combo.addItems(list(ENGINE_REGISTRY.keys()))
+        for name in ENGINE_REGISTRY:
+            label = name
+            if name in UNAVAILABLE_ENGINES:
+                label += "  [install required]"
+            self._model_combo.addItem(label, userData=name)
+
         last = self._cfg.get("model", {}).get("last_used", "kotoba-whisper-v2")
-        idx = self._model_combo.findText(last)
-        if idx >= 0:
-            self._model_combo.setCurrentIndex(idx)
+        for i in range(self._model_combo.count()):
+            if self._model_combo.itemData(i) == last:
+                self._model_combo.setCurrentIndex(i)
+                break
         layout.addWidget(self._model_combo)
 
-        device_str = "CUDA available" if torch.cuda.is_available() else "CPU only"
+        # CUDA indicator + manual override
+        cuda_row = QHBoxLayout()
         if torch.cuda.is_available():
-            device_str = f"CUDA | {torch.cuda.get_device_name(0)}"
-        self._device_label = QLabel(device_str)
-        layout.addWidget(self._device_label)
+            gpu_name = torch.cuda.get_device_name(0)
+            vram_gb  = torch.cuda.get_device_properties(0).total_memory / 1024**3
+            cuda_str = f"CUDA  {gpu_name}  ({vram_gb:.1f} GB)"
+            color    = "#4fc3f7"
+        else:
+            cuda_str = "CPU only  (CUDA not detected)"
+            color    = "#ff7043"
+        self._device_label = QLabel(cuda_str)
+        self._device_label.setStyleSheet(f"color: {color};")
+
+        self._cuda_combo = QComboBox()
+        self._cuda_combo.addItems(["auto", "cuda", "cpu"])
+        self._cuda_combo.setMaximumWidth(70)
+        self._cuda_combo.currentTextChanged.connect(self._on_device_changed)
+        # Set combo to match settings
+        idx = self._cuda_combo.findText(self._settings.get("device", "auto"))
+        if idx >= 0:
+            self._cuda_combo.setCurrentIndex(idx)
+
+        cuda_row.addWidget(self._device_label)
+        cuda_row.addStretch()
+        cuda_row.addWidget(QLabel("Device:"))
+        cuda_row.addWidget(self._cuda_combo)
+        layout.addLayout(cuda_row)
         return grp
 
     def _grp_output(self) -> QGroupBox:
@@ -240,9 +371,9 @@ class MainWindow(QMainWindow):
         layout.addLayout(row)
 
         fmt_row = QHBoxLayout()
-        self._chk_srt = QCheckBox("SRT")
+        self._chk_srt  = QCheckBox("SRT")
         self._chk_srt.setChecked(True)
-        self._chk_txt = QCheckBox("TXT")
+        self._chk_txt  = QCheckBox("TXT")
         self._chk_txt.setChecked(True)
         self._chk_json = QCheckBox("JSON")
         fmt_row.addWidget(self._chk_srt)
@@ -254,11 +385,11 @@ class MainWindow(QMainWindow):
     def _grp_preprocess(self) -> QGroupBox:
         grp = QGroupBox("Preprocessing")
         layout = QVBoxLayout(grp)
-        self._chk_noise = QCheckBox("Noise Reduction")
-        self._chk_norm = QCheckBox("Volume Normalization")
+        self._chk_noise   = QCheckBox("Noise Reduction")
+        self._chk_norm    = QCheckBox("Volume Normalization")
         self._chk_norm.setChecked(True)
         self._chk_silence = QCheckBox("Silence Removal")
-        self._chk_vad = QCheckBox("VAD")
+        self._chk_vad     = QCheckBox("VAD")
         self._chk_vad.setChecked(True)
         self._chk_resample = QCheckBox("Resample to 16kHz")
         self._chk_resample.setChecked(True)
@@ -284,14 +415,14 @@ class MainWindow(QMainWindow):
 
     def _apply_dark_palette(self) -> None:
         palette = QPalette()
-        palette.setColor(QPalette.Window, QColor(30, 30, 30))
-        palette.setColor(QPalette.WindowText, QColor(220, 220, 220))
-        palette.setColor(QPalette.Base, QColor(20, 20, 20))
-        palette.setColor(QPalette.AlternateBase, QColor(45, 45, 45))
-        palette.setColor(QPalette.Text, QColor(220, 220, 220))
-        palette.setColor(QPalette.Button, QColor(50, 50, 50))
-        palette.setColor(QPalette.ButtonText, QColor(220, 220, 220))
-        palette.setColor(QPalette.Highlight, QColor(42, 130, 218))
+        palette.setColor(QPalette.Window,          QColor(30, 30, 30))
+        palette.setColor(QPalette.WindowText,      QColor(220, 220, 220))
+        palette.setColor(QPalette.Base,            QColor(20, 20, 20))
+        palette.setColor(QPalette.AlternateBase,   QColor(45, 45, 45))
+        palette.setColor(QPalette.Text,            QColor(220, 220, 220))
+        palette.setColor(QPalette.Button,          QColor(50, 50, 50))
+        palette.setColor(QPalette.ButtonText,      QColor(220, 220, 220))
+        palette.setColor(QPalette.Highlight,       QColor(42, 130, 218))
         palette.setColor(QPalette.HighlightedText, QColor(0, 0, 0))
         self.setPalette(palette)
 
@@ -299,15 +430,18 @@ class MainWindow(QMainWindow):
     # Slots
     # ------------------------------------------------------------------
 
-    def _pick_file(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Select Input File", "",
-            f"Media Files ({self.SUPPORTED_EXTS});;All Files (*)"
+    def _on_device_changed(self, text: str) -> None:
+        self._settings["device"] = text
+        logger.info(f"Device override: {text}")
+
+    def _pick_files(self) -> None:
+        exts = " ".join(f"*{e}" for e in sorted(SUPPORTED_EXTS))
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Select Input Files", "",
+            f"Media Files ({exts});;All Files (*)"
         )
-        if path:
-            self._file_edit.setText(path)
-            size_mb = Path(path).stat().st_size / 1024 ** 2
-            self._file_info_label.setText(f"{Path(path).name}  ({size_mb:.1f} MB)")
+        if paths:
+            self._file_list.add_files(paths)
 
     def _pick_output_dir(self) -> None:
         d = QFileDialog.getExistingDirectory(self, "Select Output Folder")
@@ -318,6 +452,10 @@ class MainWindow(QMainWindow):
         dlg = SettingsDialog(self._settings, parent=self)
         if dlg.exec():
             self._settings = dlg.get_config()
+            # Sync CUDA combo to settings
+            idx = self._cuda_combo.findText(self._settings.get("device", "auto"))
+            if idx >= 0:
+                self._cuda_combo.setCurrentIndex(idx)
 
     def _open_benchmark(self) -> None:
         from ui.benchmark_dialog import BenchmarkDialog
@@ -330,27 +468,34 @@ class MainWindow(QMainWindow):
 
     def _open_wer_dialog(self) -> None:
         from ui.wer_dialog import WERDialog
-        dlg = WERDialog(parent=self)
-        dlg.exec()
+        WERDialog(parent=self).exec()
 
     def _show_about(self) -> None:
         gpu = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU only"
         QMessageBox.information(
             self, "AI STT Studio",
-            f"AI STT Studio v1.0\n\n"
-            f"Japanese Speech Transcription Tool\n"
-            f"Models: ReazonSpeech K2-v2, Parakeet-TDT, Kotoba-Whisper-v2\n\n"
+            "AI STT Studio v1.0\n\n"
+            "Japanese Speech Transcription Tool\n"
+            "Models: Kotoba-Whisper-v2, Parakeet-TDT, ReazonSpeech K2-v2, Qwen2-Audio-7B\n\n"
             f"GPU: {gpu}",
         )
 
+    def _warn_unavailable_engines(self) -> None:
+        if UNAVAILABLE_ENGINES:
+            names = "\n".join(f"  {k}" for k in UNAVAILABLE_ENGINES)
+            self._log_view.append(
+                f"[INFO] The following engines need optional packages:\n{names}\n"
+                "  See requirements_models.txt for install instructions.\n"
+            )
+
     # ------------------------------------------------------------------
-    # Transcription control
+    # Queue-based transcription
     # ------------------------------------------------------------------
 
-    def _start_transcription(self) -> None:
-        path = self._file_edit.text().strip()
-        if not path or not Path(path).exists():
-            QMessageBox.warning(self, "Error", "Please select a valid input file.")
+    def _start_queue(self) -> None:
+        paths = self._file_list.all_paths()
+        if not paths:
+            QMessageBox.warning(self, "Error", "Add at least one input file.")
             return
 
         formats = []
@@ -361,16 +506,34 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Error", "Select at least one output format.")
             return
 
+        self._queue = list(paths)
         self._log_view.clear()
         self._result_view.clear()
-        self._progress_bar.setValue(0)
         self._start_btn.setEnabled(False)
         self._stop_btn.setEnabled(True)
-        self._status_label.setText("Transcribing...")
+        self._update_queue_label()
+        self._process_next()
+
+    def _process_next(self) -> None:
+        if not self._queue:
+            self._on_all_done()
+            return
+
+        path = self._queue.pop(0)
+        self._update_queue_label()
+        self._progress_bar.setValue(0)
+        self._status_label.setText(f"Transcribing: {Path(path).name}")
+        self._log_view.append(f"\n{'='*60}")
+        self._log_view.append(f"File: {Path(path).name}")
+
+        formats = []
+        if self._chk_srt.isChecked():  formats.append("srt")
+        if self._chk_txt.isChecked():  formats.append("txt")
+        if self._chk_json.isChecked(): formats.append("json")
 
         self._worker = TranscriptionWorker(
             input_path=path,
-            model_name=self._model_combo.currentText(),
+            model_name=self._model_combo.currentData(),
             output_dir=self._out_edit.text(),
             engine_config=self._build_engine_config(),
             preprocess_config=self._build_preprocess_config(),
@@ -380,29 +543,38 @@ class MainWindow(QMainWindow):
         self._worker.segment_ready.connect(self._on_segment)
         self._worker.log_message.connect(self._log_view.append)
         self._worker.vram_usage.connect(self._vram_bar.update_usage)
-        self._worker.finished.connect(self._on_finished)
+        self._worker.finished.connect(self._on_file_done)
         self._worker.error.connect(self._on_error)
         self._worker.start()
 
     def _stop_transcription(self) -> None:
+        self._queue.clear()
         if self._worker:
             self._worker.request_stop()
         self._stop_btn.setEnabled(False)
+        self._update_queue_label()
 
     def _on_segment(self, text: str, start: float, end: float) -> None:
         self._result_view.append(text)
 
-    def _on_finished(self, out_dir: str) -> None:
+    def _on_file_done(self, out_dir: str) -> None:
+        self._log_view.append(f"Saved to: {out_dir}")
+        self._process_next()
+
+    def _on_all_done(self) -> None:
         self._start_btn.setEnabled(True)
         self._stop_btn.setEnabled(False)
-        self._status_label.setText(f"Done -> {out_dir}")
-        QMessageBox.information(self, "Done", f"Transcription complete.\n\nOutput: {out_dir}")
+        self._status_label.setText("All files complete.")
+        self._progress_bar.setValue(100)
+        QMessageBox.information(self, "Done", f"All transcriptions complete.\n\nOutput: {self._out_edit.text()}")
 
     def _on_error(self, msg: str) -> None:
-        self._start_btn.setEnabled(True)
-        self._stop_btn.setEnabled(False)
-        self._status_label.setText("Error")
-        QMessageBox.critical(self, "Error", f"Transcription failed:\n\n{msg}")
+        self._log_view.append(f"[ERROR] {msg}")
+        self._status_label.setText("Error - continuing queue...")
+        self._process_next()   # skip failed file, continue with rest
+
+    def _update_queue_label(self) -> None:
+        self._queue_label.setText(f"Queue: {len(self._queue)} remaining")
 
     def _poll_vram(self) -> None:
         if torch.cuda.is_available():
@@ -415,8 +587,10 @@ class MainWindow(QMainWindow):
 
     def _build_engine_config(self) -> EngineConfig:
         s = self._settings
+        # CUDA combo always wins over settings dialog
+        device = self._cuda_combo.currentText()
         return EngineConfig(
-            device=s.get("device", "auto"),
+            device=device,
             fp16=s.get("fp16", True),
             bf16=s.get("bf16", False),
             batch_size=s.get("batch_size", 8),
@@ -452,28 +626,28 @@ class MainWindow(QMainWindow):
         cuda = self._cfg.get("cuda", {})
         pre  = self._cfg.get("preprocessing", {})
         return {
-            "device":                        "auto" if cuda.get("auto_detect", True) else cuda.get("device", "auto"),
-            "fp16":                          cuda.get("fp16", True),
-            "bf16":                          cuda.get("bf16", False),
-            "batch_size":                    cuda.get("batch_size", 8),
-            "beam_size":                     dec.get("beam_size", 5),
-            "temperature":                   dec.get("temperature", 0.0),
-            "best_of":                       dec.get("best_of", 5),
-            "patience":                      dec.get("patience", 1.0),
-            "condition_on_previous_text":    dec.get("condition_on_previous_text", False),
-            "no_speech_threshold":           dec.get("no_speech_threshold", 0.6),
-            "logprob_threshold":             dec.get("logprob_threshold", -1.0),
-            "compression_ratio_threshold":   dec.get("compression_ratio_threshold", 2.4),
+            "device":                          "auto",
+            "fp16":                            cuda.get("fp16", True),
+            "bf16":                            cuda.get("bf16", False),
+            "batch_size":                      cuda.get("batch_size", 8),
+            "beam_size":                       dec.get("beam_size", 5),
+            "temperature":                     dec.get("temperature", 0.0),
+            "best_of":                         dec.get("best_of", 5),
+            "patience":                        dec.get("patience", 1.0),
+            "condition_on_previous_text":      dec.get("condition_on_previous_text", False),
+            "no_speech_threshold":             dec.get("no_speech_threshold", 0.6),
+            "logprob_threshold":               dec.get("logprob_threshold", -1.0),
+            "compression_ratio_threshold":     dec.get("compression_ratio_threshold", 2.4),
             "hallucination_silence_threshold": dec.get("hallucination_silence_threshold", 2.0),
-            "word_timestamps":               ts.get("word_timestamps", True),
-            "min_segment_duration":          ts.get("min_segment_duration", 0.5),
-            "max_segment_duration":          ts.get("max_segment_duration", 15.0),
-            "merge_gap":                     ts.get("merge_threshold", 0.3),
-            "vad_enabled":                   vad.get("threshold", 0.5) > 0,
-            "vad_threshold":                 vad.get("threshold", 0.5),
-            "vad_min_speech_ms":             vad.get("min_speech_duration", 250),
-            "vad_min_silence_ms":            vad.get("min_silence_duration", 500),
-            "chunk_duration_seconds":        pre.get("chunk_duration_seconds", 600),
+            "word_timestamps":                 ts.get("word_timestamps", True),
+            "min_segment_duration":            ts.get("min_segment_duration", 0.5),
+            "max_segment_duration":            ts.get("max_segment_duration", 15.0),
+            "merge_gap":                       ts.get("merge_threshold", 0.3),
+            "vad_enabled":                     True,
+            "vad_threshold":                   vad.get("threshold", 0.5),
+            "vad_min_speech_ms":               vad.get("min_speech_duration", 250),
+            "vad_min_silence_ms":              vad.get("min_silence_duration", 500),
+            "chunk_duration_seconds":          pre.get("chunk_duration_seconds", 600),
         }
 
     # ------------------------------------------------------------------
@@ -489,7 +663,7 @@ class MainWindow(QMainWindow):
 
     def _save_config(self) -> None:
         import yaml
-        self._cfg.setdefault("model", {})["last_used"] = self._model_combo.currentText()
+        self._cfg.setdefault("model", {})["last_used"] = self._model_combo.currentData()
         self._cfg.setdefault("output", {})["directory"] = self._out_edit.text()
         try:
             with open("config/config.yaml", "w", encoding="utf-8") as f:

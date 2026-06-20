@@ -6,26 +6,30 @@ from engines.base_engine import BaseSTTEngine, EngineConfig
 from engines.kotoba_whisper_engine import KotobaWhisperEngine
 from engines.parakeet_engine import ParakeetEngine
 from engines.reazonspeech_engine import ReazonSpeechEngine
+from engines.qwen_audio_engine import QwenAudioEngine
 
 ENGINE_REGISTRY: dict[str, type[BaseSTTEngine]] = {
-    "kotoba-whisper-v2":       KotobaWhisperEngine,
+    "kotoba-whisper-v2":        KotobaWhisperEngine,
     "parakeet-tdt_ctc-0.6b-ja": ParakeetEngine,
-    "reazonspeech-k2-v2":      ReazonSpeechEngine,
+    "reazonspeech-k2-v2":       ReazonSpeechEngine,
+    "qwen2-audio-7b":           QwenAudioEngine,
 }
 
-# Mark engines whose optional deps are missing so the UI can warn the user
+# Engines whose optional deps are missing (populated by _check_deps)
 UNAVAILABLE_ENGINES: dict[str, str] = {}
+
 
 def _check_deps() -> None:
     checks = {
-        "reazonspeech-k2-v2": ("reazonspeech", "pip install git+https://github.com/reazon-research/reazonspeech.git#subdirectory=espnet"),
-        "parakeet-tdt_ctc-0.6b-ja": ("nemo", "pip install nemo_toolkit[asr]"),
+        "reazonspeech-k2-v2":       ("reazonspeech", "pip install git+https://github.com/reazon-research/reazonspeech.git#subdirectory=espnet"),
+        "parakeet-tdt_ctc-0.6b-ja": ("nemo",          "pip install nemo_toolkit[asr]"),
     }
     for engine_name, (module, hint) in checks.items():
         try:
             __import__(module)
         except ImportError:
             UNAVAILABLE_ENGINES[engine_name] = hint
+
 
 _check_deps()
 

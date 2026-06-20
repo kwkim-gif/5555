@@ -46,7 +46,7 @@ REQUIRED_FILES: dict[str, str] = {
 # Directories mirrored from GitHub if missing
 REQUIRED_DIRS: dict[str, list[str]] = {
     "engines":   ["__init__.py", "base_engine.py", "kotoba_whisper_engine.py",
-                  "parakeet_engine.py", "reazonspeech_engine.py"],
+                  "parakeet_engine.py", "reazonspeech_engine.py", "qwen_audio_engine.py"],
     "audio":     ["__init__.py", "preprocess.py"],
     "subtitle":  ["__init__.py", "srt_writer.py", "txt_writer.py"],
     "ui":        ["__init__.py", "main_window.py", "settings_dialog.py",
