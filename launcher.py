@@ -1,12 +1,11 @@
 """
-AI STT Studio — Windows launcher.
+AI STT Studio - Windows launcher.
 
-역할:
-  1. 첫 실행: tkinter GUI로 진행상황을 표시하며 venv 생성 + pip install
-  2. 이후 실행: 즉시 app.py 실행
+First run:  shows a tkinter setup window, creates venv, runs pip install.
+Later runs: launches app.py immediately with no setup window.
 
-이 파일은 PyInstaller로 단독 exe로 빌드되며,
-Python / PySide6 설치 여부와 무관하게 동작한다.
+This file is bundled into a standalone exe via PyInstaller and
+works without any pre-installed packages (uses stdlib tkinter only).
 """
 
 from __future__ import annotations
@@ -19,32 +18,30 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
 
-# ── 경로 설정 ──────────────────────────────────────────────────────────────
+# ── Paths ──────────────────────────────────────────────────────────────────
 if getattr(sys, "frozen", False):
-    # PyInstaller 빌드 환경: exe가 있는 폴더가 작업 디렉토리
     APP_DIR = Path(sys.executable).parent
 else:
     APP_DIR = Path(__file__).parent.resolve()
 
-VENV_DIR = APP_DIR / ".venv"
+VENV_DIR   = APP_DIR / ".venv"
 PYTHON_BIN = VENV_DIR / "Scripts" / "python.exe"
-PIP_BIN = VENV_DIR / "Scripts" / "pip.exe"
 APP_SCRIPT = APP_DIR / "app.py"
-REQ_FILE = APP_DIR / "requirements.txt"
+REQ_FILE   = APP_DIR / "requirements.txt"
 
 WINDOW_W, WINDOW_H = 560, 380
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# Setup GUI (tkinter — 표준 라이브러리이므로 추가 설치 불필요)
+# Setup GUI
 # ──────────────────────────────────────────────────────────────────────────
 
 class SetupWindow:
-    """첫 실행 환경 구성 진행창."""
+    """First-run environment setup progress window."""
 
     def __init__(self) -> None:
         self.root = tk.Tk()
-        self.root.title("AI STT Studio — 환경 초기화")
+        self.root.title("AI STT Studio - Setup")
         self.root.geometry(f"{WINDOW_W}x{WINDOW_H}")
         self.root.resizable(False, False)
         self.root.configure(bg="#1e1e1e")
@@ -61,7 +58,6 @@ class SetupWindow:
         self.root.geometry(f"{WINDOW_W}x{WINDOW_H}+{x}+{y}")
 
     def _build(self) -> None:
-        # 로고 / 제목
         tk.Label(
             self.root,
             text="AI STT Studio",
@@ -72,14 +68,13 @@ class SetupWindow:
 
         tk.Label(
             self.root,
-            text="日本語 音声転写ツール",
+            text="Japanese Speech Transcription Tool",
             font=("Segoe UI", 10),
             fg="#aaaaaa",
             bg="#1e1e1e",
         ).pack()
 
-        # 상태 메시지
-        self._status_var = tk.StringVar(value="환경 확인 중...")
+        self._status_var = tk.StringVar(value="Checking environment...")
         tk.Label(
             self.root,
             textvariable=self._status_var,
@@ -89,7 +84,6 @@ class SetupWindow:
             wraplength=480,
         ).pack(pady=(24, 6))
 
-        # 진행바
         style = ttk.Style()
         style.theme_use("clam")
         style.configure(
@@ -109,7 +103,6 @@ class SetupWindow:
         )
         self._progress.pack(pady=4)
 
-        # 세부 로그
         log_frame = tk.Frame(self.root, bg="#2d2d2d", padx=2, pady=2)
         log_frame.pack(fill="both", expand=True, padx=36, pady=(14, 14))
         self._log = tk.Text(
@@ -138,67 +131,59 @@ class SetupWindow:
         self._status_var.set(msg)
         self.root.update_idletasks()
 
-    def set_progress_determinate(self, value: int) -> None:
+    def set_progress_done(self) -> None:
         self._progress.stop()
-        self._progress.configure(mode="determinate", maximum=100, value=value)
+        self._progress.configure(mode="determinate", maximum=100, value=100)
         self.root.update_idletasks()
 
     def start_indeterminate(self) -> None:
         self._progress.configure(mode="indeterminate")
         self._progress.start(12)
 
-    def run_setup_thread(self) -> None:
+    def run_setup_thread(self) -> bool:
         self.start_indeterminate()
-        t = threading.Thread(target=self._setup_worker, daemon=True)
+        t = threading.Thread(target=self._worker, daemon=True)
         t.start()
         self.root.mainloop()
         return self._success
 
-    # ── 실제 설치 로직 (별도 스레드) ──────────────────────────────────────
+    # ── Worker (runs in background thread) ────────────────────────────────
 
-    def _setup_worker(self) -> None:
+    def _worker(self) -> None:
         try:
             self._do_setup()
             self._success = True
             self.root.after(800, self.root.destroy)
         except Exception as exc:
-            self.set_status(f"❌ 설치 실패: {exc}")
-            self.log(f"\n오류: {exc}")
-            self.log("\n수동으로 다음 명령을 실행하세요:")
+            self.set_status(f"Setup failed: {exc}")
+            self.log(f"\nError: {exc}")
+            self.log("\nManual steps to fix:")
             self.log(f"  python -m venv {VENV_DIR}")
-            self.log(f"  {PIP_BIN} install -r {REQ_FILE}")
-            # 오류 시 창을 닫지 않고 대기 (사용자가 읽을 수 있도록)
+            self.log(f"  {VENV_DIR}\\Scripts\\pip install -r {REQ_FILE}")
 
     def _do_setup(self) -> None:
-        # Step 1: Python 버전 확인
-        self.set_status("Python 버전 확인 중...")
+        self.set_status("Checking Python version...")
         self.log(f"Python: {sys.version}")
         major, minor = sys.version_info[:2]
         if major < 3 or minor < 11:
-            raise RuntimeError(f"Python 3.11 이상이 필요합니다. (현재: {major}.{minor})")
+            raise RuntimeError(f"Python 3.11+ required. Found: {major}.{minor}")
 
-        # Step 2: venv 생성
         if not PYTHON_BIN.exists():
-            self.set_status("가상환경(venv) 생성 중...")
-            self.log(f"venv 생성: {VENV_DIR}")
-            self._run(
-                [sys.executable, "-m", "venv", str(VENV_DIR)],
-                "venv 생성 실패",
-            )
-            self.log("✅ venv 생성 완료")
+            self.set_status("Creating virtual environment...")
+            self.log(f"Creating venv: {VENV_DIR}")
+            self._run([sys.executable, "-m", "venv", str(VENV_DIR)], "venv creation failed")
+            self.log("venv created.")
         else:
-            self.log(f"✅ 기존 venv 사용: {VENV_DIR}")
+            self.log(f"Existing venv: {VENV_DIR}")
 
-        # Step 3: pip 업그레이드
-        self.set_status("pip 업그레이드 중...")
+        self.set_status("Upgrading pip...")
         self._run(
             [str(PYTHON_BIN), "-m", "pip", "install", "--upgrade", "pip", "--quiet"],
-            "pip 업그레이드 실패",
+            "pip upgrade failed",
         )
 
-        # Step 4: 의존성 설치
-        self.set_status("패키지 설치 중... (최초 1회, 수 분 소요)")
-        self.log(f"requirements: {REQ_FILE}")
+        self.set_status("Installing packages... (first run only, may take several minutes)")
+        self.log(f"Requirements: {REQ_FILE}")
         self._run(
             [
                 str(PYTHON_BIN), "-m", "pip", "install",
@@ -206,14 +191,15 @@ class SetupWindow:
                 "--quiet",
                 "--no-warn-script-location",
             ],
-            "패키지 설치 실패",
+            "Package installation failed",
             stream=True,
         )
-        self.log("✅ 모든 패키지 설치 완료")
-        self.set_status("✅ 설치 완료! 앱을 시작합니다...")
-        self.set_progress_determinate(100)
+        self.log("All packages installed.")
+        self.set_status("Setup complete! Launching app...")
+        self.set_progress_done()
 
     def _run(self, cmd: list[str], error_msg: str, stream: bool = False) -> None:
+        flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
         if stream:
             proc = subprocess.Popen(
                 cmd,
@@ -222,7 +208,7 @@ class SetupWindow:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+                creationflags=flags,
             )
             for line in proc.stdout:
                 line = line.rstrip()
@@ -230,7 +216,7 @@ class SetupWindow:
                     self.log(line)
             proc.wait()
             if proc.returncode != 0:
-                raise RuntimeError(f"{error_msg} (code {proc.returncode})")
+                raise RuntimeError(f"{error_msg} (exit code {proc.returncode})")
         else:
             result = subprocess.run(
                 cmd,
@@ -238,38 +224,37 @@ class SetupWindow:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+                creationflags=flags,
             )
             if result.stdout.strip():
                 self.log(result.stdout.strip())
             if result.returncode != 0:
                 self.log(result.stderr.strip())
-                raise RuntimeError(f"{error_msg} (code {result.returncode})")
+                raise RuntimeError(f"{error_msg} (exit code {result.returncode})")
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# 런처 진입점
+# Entry point
 # ──────────────────────────────────────────────────────────────────────────
 
 def is_env_ready() -> bool:
-    """venv가 존재하고 PySide6이 설치되어 있으면 준비된 것으로 판단."""
     if not PYTHON_BIN.exists():
         return False
+    flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
     result = subprocess.run(
         [str(PYTHON_BIN), "-c", "import PySide6"],
         capture_output=True,
-        creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        creationflags=flags,
     )
     return result.returncode == 0
 
 
 def launch_app() -> None:
-    """venv Python으로 app.py를 실행한다."""
-    os.chdir(APP_DIR)
+    flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
     subprocess.Popen(
         [str(PYTHON_BIN), str(APP_SCRIPT)],
         cwd=str(APP_DIR),
-        creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        creationflags=flags,
     )
 
 
@@ -280,7 +265,6 @@ def main() -> None:
         win = SetupWindow()
         ok = win.run_setup_thread()
         if not ok:
-            # 오류 발생 시 창은 열려 있으므로 종료하지 않음
             return
 
     launch_app()

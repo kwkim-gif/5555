@@ -1,4 +1,4 @@
-"""QThread worker — runs preprocessing + transcription off the UI thread."""
+"""QThread worker - runs preprocessing + transcription off the UI thread."""
 
 from __future__ import annotations
 
@@ -22,20 +22,20 @@ class TranscriptionWorker(QThread):
     """
     Signals
     -------
-    progress(int)          — 0-100 overall progress
-    segment_ready(str)     — new transcribed segment text
-    log_message(str)       — log line for the UI log panel
-    vram_usage(float)      — VRAM MB for the VRAM monitor
-    finished(str)          — output directory on success
-    error(str)             — error message on failure
+    progress(int)              - 0-100 overall progress
+    segment_ready(str, float, float) - text, start, end
+    log_message(str)           - log line for UI log panel
+    vram_usage(float)          - VRAM MB
+    finished(str)              - output directory on success
+    error(str)                 - error message on failure
     """
 
-    progress = Signal(int)
-    segment_ready = Signal(str, float, float)  # text, start, end
-    log_message = Signal(str)
-    vram_usage = Signal(float)
-    finished = Signal(str)
-    error = Signal(str)
+    progress     = Signal(int)
+    segment_ready = Signal(str, float, float)
+    log_message  = Signal(str)
+    vram_usage   = Signal(float)
+    finished     = Signal(str)
+    error        = Signal(str)
 
     def __init__(
         self,
@@ -59,9 +59,7 @@ class TranscriptionWorker(QThread):
 
     def request_stop(self) -> None:
         self._stop_requested = True
-        self._log("⏹ 중지 요청됨")
-
-    # ------------------------------------------------------------------
+        self._log("Stop requested")
 
     def run(self) -> None:
         try:
@@ -74,34 +72,32 @@ class TranscriptionWorker(QThread):
 
     def _run(self) -> None:
         start_total = time.perf_counter()
-        self._log(f"▶ 전사 시작: {Path(self.input_path).name}")
-        self._log(f"  모델: {self.model_name}")
+        self._log(f"Transcription started: {Path(self.input_path).name}")
+        self._log(f"  Model: {self.model_name}")
 
-        # ── 1. Preprocess ──────────────────────────────────────────────
-        self._log("🔧 음성 추출 및 전처리 시작")
+        # Step 1: Preprocess
+        self._log("Extracting and preprocessing audio...")
         preprocessor = AudioPreprocessor(self.preprocess_config)
         processed_path = preprocessor.prepare(self.input_path, self.output_dir)
-        self._log(f"✅ 전처리 완료: {Path(processed_path).name}")
+        self._log(f"Preprocessing done: {Path(processed_path).name}")
         self.progress.emit(5)
 
         if self._stop_requested:
             return
 
-        # ── 2. Load model ──────────────────────────────────────────────
-        self._log("📦 모델 로딩 중...")
+        # Step 2: Load model
+        self._log("Loading model...")
         self._engine = get_engine(self.model_name, self.engine_config)
         self._engine.load_model()
-        device_info = self._engine.device
-        self._log(f"✅ 모델 로드 완료 (device={device_info}, dtype={self._engine.compute_dtype})")
+        self._log(f"Model loaded (device={self._engine.device}, dtype={self._engine.compute_dtype})")
         self.progress.emit(10)
 
-        # ── 3. Transcribe ──────────────────────────────────────────────
-        self._log("🎙 전사 시작...")
+        # Step 3: Transcribe
+        self._log("Transcription started...")
         segments: list[TranscriptionSegment] = []
 
         def on_progress(pct: int) -> None:
-            mapped = 10 + int(pct * 0.85)
-            self.progress.emit(mapped)
+            self.progress.emit(10 + int(pct * 0.85))
             self._emit_vram()
 
         gen = self._engine.transcribe(processed_path, progress_callback=on_progress)
@@ -109,7 +105,7 @@ class TranscriptionWorker(QThread):
         try:
             while True:
                 if self._stop_requested:
-                    self._log("⏹ 전사 중단됨")
+                    self._log("Transcription stopped by user")
                     break
                 seg = next(gen)
                 segments.append(seg)
@@ -122,7 +118,7 @@ class TranscriptionWorker(QThread):
             from engines.base_engine import TranscriptionResult as TR
             result = TR(segments=segments, language="ja")
 
-        # ── 4. Save outputs ────────────────────────────────────────────
+        # Step 4: Save outputs
         stem = Path(self.input_path).stem
         out_dir = Path(self.output_dir)
         saved: list[str] = []
@@ -130,27 +126,24 @@ class TranscriptionWorker(QThread):
         if "srt" in self.output_formats:
             path = SRTWriter().write(result.segments, str(out_dir / f"{stem}.srt"))
             saved.append(path)
-            self._log(f"💾 SRT 저장: {path}")
+            self._log(f"SRT saved: {path}")
 
         if "txt" in self.output_formats:
             path = TXTWriter().write(result.segments, str(out_dir / f"{stem}.txt"))
             saved.append(path)
-            self._log(f"💾 TXT 저장: {path}")
+            self._log(f"TXT saved: {path}")
 
         if "json" in self.output_formats:
             path = JSONWriter().write(result.segments, str(out_dir / f"{stem}.json"))
             saved.append(path)
-            self._log(f"💾 JSON 저장: {path}")
+            self._log(f"JSON saved: {path}")
 
         elapsed = time.perf_counter() - start_total
-        self._log(f"✅ 완료! 처리시간: {elapsed:.1f}s, 세그먼트: {len(result.segments)}")
+        self._log(f"Done! Time: {elapsed:.1f}s, Segments: {len(result.segments)}")
         self.progress.emit(100)
 
-        # ── 5. Cleanup ─────────────────────────────────────────────────
         self._engine.unload_model()
         self.finished.emit(str(out_dir))
-
-    # ------------------------------------------------------------------
 
     def _log(self, msg: str) -> None:
         import datetime

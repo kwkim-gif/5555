@@ -1,7 +1,7 @@
 """
-아이콘 파일 생성 스크립트.
-build.bat 내부에서 자동 실행되지만 독립 실행도 가능.
-  python make_icon.py
+Generate assets/icon.ico.
+Run standalone: python make_icon.py
+Called automatically by build.bat when icon is missing.
 """
 
 from __future__ import annotations
@@ -21,33 +21,33 @@ def make_icon(output_path: str = "assets/icon.ico") -> None:
     img = Image.new("RGBA", (SIZE, SIZE), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
 
-    # 배경 원
+    # Background circle
     d.ellipse([4, 4, SIZE - 4, SIZE - 4], fill=(25, 118, 210, 255))
 
-    # 음파 호 (좌)
+    # Sound wave arcs (left)
     arc_color = (255, 255, 255, 200)
     d.arc([60, 130, 190, 380], start=210, end=150, fill=arc_color, width=22)
     d.arc([30, 100, 220, 410], start=210, end=150, fill=arc_color, width=14)
 
-    # 음파 호 (우)
+    # Sound wave arcs (right)
     d.arc([320, 130, 450, 380], start=330, end=30, fill=arc_color, width=22)
     d.arc([290, 100, 480, 410], start=330, end=30, fill=arc_color, width=14)
 
-    # 마이크 몸체
+    # Microphone body
     d.rounded_rectangle([186, 100, 324, 300], radius=70, fill=(255, 255, 255, 255))
 
-    # 마이크 스탠드
+    # Microphone stand
     d.line([(255, 300), (255, 380)], fill=(255, 255, 255, 255), width=18)
     d.line([(200, 380), (310, 380)], fill=(255, 255, 255, 255), width=18)
 
-    # "AI" 텍스트
+    # "AI" label
     try:
         font = ImageFont.truetype("arial.ttf", 70)
     except Exception:
         font = ImageFont.load_default()
     d.text((200, 400), "AI", font=font, fill=(255, 255, 255, 230))
 
-    # ICO 저장 (다중 해상도)
+    # Save multi-resolution ICO
     out = Path(output_path)
     out.parent.mkdir(exist_ok=True)
     sizes = [16, 24, 32, 48, 64, 128, 256]

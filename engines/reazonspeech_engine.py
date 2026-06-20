@@ -12,10 +12,7 @@ from engines.base_engine import BaseSTTEngine, EngineConfig, TranscriptionResult
 
 
 class ReazonSpeechEngine(BaseSTTEngine):
-    """
-    ReazonSpeech K2-v2 — high-accuracy Japanese ASR trained on Japanese broadcast data.
-    Uses k2/icefall-based architecture for fast inference.
-    """
+    """ReazonSpeech K2-v2 - high-accuracy Japanese ASR trained on broadcast data."""
 
     MODEL_NAME = "reazonspeech-k2-v2"
 
@@ -23,20 +20,15 @@ class ReazonSpeechEngine(BaseSTTEngine):
         super().__init__(config)
         self._transcriber = None
 
-    # ------------------------------------------------------------------
-    # Public interface
-    # ------------------------------------------------------------------
-
     def load_model(self) -> None:
-        logger.info(f"[ReazonSpeech] Loading model on {self.device}")
+        logger.info(f"[ReazonSpeech] Loading on {self.device}")
         try:
-            from reazonspeech.k2.asr import load_model, audio_from_path  # noqa: F401
-
+            from reazonspeech.k2.asr import load_model
             self._transcriber = load_model(device=self.device)
             self.is_loaded = True
-            logger.info("[ReazonSpeech] Model loaded successfully")
+            logger.info("[ReazonSpeech] Model loaded")
         except ImportError:
-            logger.error("[ReazonSpeech] reazonspeech package not found. Install with: pip install reazonspeech-k2-v2")
+            logger.error("[ReazonSpeech] Package not found. Install: pip install reazonspeech-k2-v2")
             raise
         except Exception as exc:
             logger.error(f"[ReazonSpeech] Load failed: {exc}")
@@ -52,25 +44,22 @@ class ReazonSpeechEngine(BaseSTTEngine):
 
         from reazonspeech.k2.asr import audio_from_path, transcribe
 
-        path = Path(audio_path)
-        logger.info(f"[ReazonSpeech] Transcribing: {path.name}")
+        logger.info(f"[ReazonSpeech] Transcribing: {Path(audio_path).name}")
         start_time = time.perf_counter()
 
         audio = audio_from_path(audio_path)
-        total_duration = audio.samplerate and len(audio.waveform) / audio.samplerate or 0.0
+        total_duration = len(audio.waveform) / audio.samplerate if audio.samplerate else 0.0
 
         result = transcribe(self._transcriber, audio)
-
-        collected: list[TranscriptionSegment] = []
         segments_raw = getattr(result, "segments", []) or []
-
         if not segments_raw and hasattr(result, "subwords"):
             segments_raw = self._group_subwords(result.subwords)
 
+        collected: list[TranscriptionSegment] = []
         for i, seg in enumerate(segments_raw):
             start = getattr(seg, "start_seconds", getattr(seg, "start", 0.0))
-            end = getattr(seg, "end_seconds", getattr(seg, "end", 0.0))
-            text = getattr(seg, "text", "").strip()
+            end   = getattr(seg, "end_seconds",   getattr(seg, "end",   0.0))
+            text  = getattr(seg, "text", "").strip()
             if not text:
                 continue
             segment = TranscriptionSegment(start=start, end=end, text=text)
@@ -80,51 +69,39 @@ class ReazonSpeechEngine(BaseSTTEngine):
             yield segment
 
         return TranscriptionResult(
-            segments=collected,
-            language="ja",
-            duration=total_duration,
-            model_name=self.MODEL_NAME,
-            processing_time=time.perf_counter() - start_time,
+            segments=collected, language="ja", duration=total_duration,
+            model_name=self.MODEL_NAME, processing_time=time.perf_counter() - start_time,
         )
 
     def unload_model(self) -> None:
-        import gc
-        import torch
-
+        import gc, torch
         self._transcriber = None
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         self.is_loaded = False
-        logger.info("[ReazonSpeech] Model unloaded")
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
+        logger.info("[ReazonSpeech] Unloaded")
 
     def _group_subwords(self, subwords) -> list:
-        """Group subword tokens into sentence-level pseudo-segments."""
         groups: list[dict] = []
-        current_text = ""
+        cur_text = ""
         seg_start = 0.0
-
         for sw in subwords:
             token = getattr(sw, "token", "")
-            ts = getattr(sw, "time_seconds", 0.0)
-            if not current_text:
+            ts    = getattr(sw, "time_seconds", 0.0)
+            if not cur_text:
                 seg_start = ts
-            current_text += token
-            if token in ("。", "！", "？", "\n"):
-                groups.append({"start": seg_start, "end": ts, "text": current_text.strip()})
-                current_text = ""
-
-        if current_text.strip():
-            groups.append({"start": seg_start, "end": seg_start + 3.0, "text": current_text.strip()})
+            cur_text += token
+            if token in ("。", "！", "？", "\n"):  # Japanese full-stop / exclamation / question
+                groups.append({"start": seg_start, "end": ts, "text": cur_text.strip()})
+                cur_text = ""
+        if cur_text.strip():
+            groups.append({"start": seg_start, "end": seg_start + 3.0, "text": cur_text.strip()})
 
         class _Seg:
             def __init__(self, d: dict) -> None:
                 self.start = d["start"]
-                self.end = d["end"]
-                self.text = d["text"]
+                self.end   = d["end"]
+                self.text  = d["text"]
 
         return [_Seg(g) for g in groups]

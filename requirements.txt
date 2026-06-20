@@ -8,7 +8,7 @@ transformers>=4.37.0
 accelerate>=0.25.0
 datasets>=2.16.0
 
-# Faster-Whisper backend (Whisper계열 우선)
+# Faster-Whisper backend (preferred for Whisper-family models)
 faster-whisper>=1.0.0
 ctranslate2>=4.0.0
 

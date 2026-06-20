@@ -1,4 +1,4 @@
-"""AI STT Studio — entry point."""
+"""AI STT Studio - entry point."""
 
 from __future__ import annotations
 
@@ -8,10 +8,6 @@ from pathlib import Path
 import yaml
 from loguru import logger
 
-
-# ------------------------------------------------------------------
-# Logging setup
-# ------------------------------------------------------------------
 
 def _configure_logging(log_dir: str = "logs", error_dir: str = "error_logs") -> None:
     Path(log_dir).mkdir(exist_ok=True)
@@ -50,10 +46,6 @@ def _load_config(config_path: str = "config/config.yaml") -> dict:
         return yaml.safe_load(f) or {}
 
 
-# ------------------------------------------------------------------
-# Main
-# ------------------------------------------------------------------
-
 def main() -> int:
     _configure_logging()
     logger.info("=" * 60)
@@ -61,18 +53,15 @@ def main() -> int:
 
     config = _load_config()
 
-    # PySide6 HiDPI
     import os
     os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "1")
 
     from PySide6.QtWidgets import QApplication
-    from PySide6.QtGui import QIcon
 
     app = QApplication(sys.argv)
     app.setApplicationName("AI STT Studio")
     app.setOrganizationName("STTStudio")
 
-    # CUDA info
     try:
         import torch
 
@@ -81,7 +70,7 @@ def main() -> int:
             props = torch.cuda.get_device_properties(0)
             logger.info(f"VRAM: {props.total_memory / 1024**3:.1f} GB")
         else:
-            logger.info("CUDA not available — running on CPU")
+            logger.info("CUDA not available - running on CPU")
     except ImportError:
         logger.warning("PyTorch not installed")
 

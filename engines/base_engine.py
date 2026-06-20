@@ -1,4 +1,4 @@
-"""Base STT engine interface — all engines must implement this contract."""
+"""Base STT engine interface - all engines must implement this contract."""
 
 from __future__ import annotations
 
@@ -89,7 +89,7 @@ class BaseSTTEngine(abc.ABC):
 
     @abc.abstractmethod
     def unload_model(self) -> None:
-        """Release model from memory/VRAM."""
+        """Release model from memory / VRAM."""
 
     def get_vram_usage_mb(self) -> float:
         if self.device != "cuda" or not torch.cuda.is_available():

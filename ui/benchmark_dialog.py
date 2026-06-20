@@ -1,10 +1,10 @@
-"""Benchmark dialog — run all models against a reference audio and show results."""
+"""Benchmark dialog - run all models and display RTF / WER / CER results."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QThread, Signal, Qt
+from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
@@ -26,136 +26,129 @@ from engines import ENGINE_REGISTRY
 
 
 class _BenchmarkThread(QThread):
-    result_ready = Signal(object)  # BenchmarkResult
-    log = Signal(str)
+    result_ready = Signal(object)
+    log          = Signal(str)
     finished_all = Signal()
 
-    def __init__(self, audio_path: str, reference_text: str, engine_config, preprocess_config, models: list[str]):
+    def __init__(self, audio_path, reference_text, engine_config, preprocess_config, models):
         super().__init__()
-        self.audio_path = audio_path
-        self.reference_text = reference_text
-        self.engine_config = engine_config
+        self.audio_path       = audio_path
+        self.reference_text   = reference_text
+        self.engine_config    = engine_config
         self.preprocess_config = preprocess_config
-        self.models = models
+        self.models           = models
 
     def run(self) -> None:
         runner = BenchmarkRunner(self.engine_config, self.preprocess_config)
         for model in self.models:
-            self.log.emit(f"▶ {model} 벤치마크 시작...")
+            self.log.emit(f"Running {model}...")
             try:
                 res = runner.run(
                     model_name=model,
                     audio_path=self.audio_path,
                     reference_text=self.reference_text or None,
-                    progress_callback=None,
                 )
                 self.result_ready.emit(res)
-                self.log.emit(f"✅ {model} RTF={res.rtf:.3f}")
+                self.log.emit(f"Done {model}: RTF={res.rtf:.3f}")
             except Exception as exc:
-                self.log.emit(f"❌ {model} 실패: {exc}")
+                self.log.emit(f"Failed {model}: {exc}")
         self.finished_all.emit()
 
 
 class BenchmarkDialog(QDialog):
     def __init__(self, engine_config, preprocess_config, parent=None) -> None:
         super().__init__(parent)
-        self.engine_config = engine_config
+        self.engine_config    = engine_config
         self.preprocess_config = preprocess_config
-        self.setWindowTitle("모델 벤치마크")
-        self.resize(800, 600)
-        self._thread: _BenchmarkThread | None = None
+        self.setWindowTitle("Model Benchmark")
+        self.resize(820, 600)
+        self._thread = None
         self._build_ui()
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
 
-        # File selection
-        file_grp = QGroupBox("벤치마크 설정")
-        fl = QVBoxLayout(file_grp)
+        grp = QGroupBox("Benchmark Settings")
+        fl  = QVBoxLayout(grp)
 
         row1 = QHBoxLayout()
         self._audio_edit = QLineEdit()
-        self._audio_edit.setPlaceholderText("테스트 음성 파일 경로...")
-        btn_audio = QPushButton("선택")
+        self._audio_edit.setPlaceholderText("Test audio file path...")
+        btn_audio = QPushButton("Browse")
         btn_audio.clicked.connect(self._pick_audio)
-        row1.addWidget(QLabel("음성:"))
+        row1.addWidget(QLabel("Audio:"))
         row1.addWidget(self._audio_edit)
         row1.addWidget(btn_audio)
 
         row2 = QHBoxLayout()
         self._ref_edit = QLineEdit()
-        self._ref_edit.setPlaceholderText("참조 텍스트 (WER/CER 측정용, 선택사항)...")
-        btn_ref = QPushButton("파일")
+        self._ref_edit.setPlaceholderText("Reference text for WER/CER (optional)...")
+        btn_ref = QPushButton("Load")
         btn_ref.clicked.connect(self._pick_ref)
-        row2.addWidget(QLabel("참조:"))
+        row2.addWidget(QLabel("Reference:"))
         row2.addWidget(self._ref_edit)
         row2.addWidget(btn_ref)
 
         fl.addLayout(row1)
         fl.addLayout(row2)
-        root.addWidget(file_grp)
+        root.addWidget(grp)
 
-        # Controls
         ctrl = QHBoxLayout()
-        self._run_btn = QPushButton("▶ 벤치마크 실행")
+        self._run_btn = QPushButton("Run Benchmark")
         self._run_btn.clicked.connect(self._run)
-        ctrl.addWidget(self._run_btn)
         self._progress = QProgressBar()
         self._progress.setRange(0, len(ENGINE_REGISTRY))
+        ctrl.addWidget(self._run_btn)
         ctrl.addWidget(self._progress)
         root.addLayout(ctrl)
 
-        # Results table
         self._table = QTableWidget(0, 7)
         self._table.setHorizontalHeaderLabels(
-            ["모델", "음성길이(s)", "처리시간(s)", "RTF", "WER", "CER", "VRAM(MB)"]
+            ["Model", "Duration(s)", "Process(s)", "RTF", "WER", "CER", "VRAM(MB)"]
         )
         self._table.horizontalHeader().setStretchLastSection(True)
         root.addWidget(self._table)
 
-        # Log
         self._log = QTextEdit()
         self._log.setReadOnly(True)
-        self._log.setMaximumHeight(120)
+        self._log.setMaximumHeight(100)
         root.addWidget(self._log)
 
-        close_btn = QPushButton("닫기")
+        close_btn = QPushButton("Close")
         close_btn.clicked.connect(self.close)
         root.addWidget(close_btn)
 
     def _pick_audio(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
-            self, "음성 파일 선택", "",
+            self, "Select Audio File", "",
             "Audio/Video (*.wav *.mp3 *.m4a *.flac *.ogg *.mp4 *.mkv *.avi *.mov *.ts)"
         )
         if path:
             self._audio_edit.setText(path)
 
     def _pick_ref(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "참조 텍스트 선택", "", "Text (*.txt)")
+        path, _ = QFileDialog.getOpenFileName(self, "Select Reference Text", "", "Text (*.txt)")
         if path:
             self._ref_edit.setText(Path(path).read_text(encoding="utf-8"))
 
     def _run(self) -> None:
         audio = self._audio_edit.text().strip()
         if not audio or not Path(audio).exists():
-            QMessageBox.warning(self, "오류", "유효한 음성 파일을 선택하세요.")
+            QMessageBox.warning(self, "Error", "Select a valid audio file.")
             return
-
         self._table.setRowCount(0)
         self._progress.setValue(0)
         self._run_btn.setEnabled(False)
-        ref = self._ref_edit.text().strip()
 
         self._thread = _BenchmarkThread(
             audio_path=audio,
-            reference_text=ref,
+            reference_text=self._ref_edit.text().strip(),
             engine_config=self.engine_config,
             preprocess_config=self.preprocess_config,
             models=list(ENGINE_REGISTRY.keys()),
         )
         self._thread.result_ready.connect(self._add_result)
-        self._thread.log.connect(lambda m: self._log.append(m))
+        self._thread.log.connect(self._log.append)
         self._thread.finished_all.connect(self._on_done)
         self._thread.start()
 
@@ -173,4 +166,4 @@ class BenchmarkDialog(QDialog):
 
     def _on_done(self) -> None:
         self._run_btn.setEnabled(True)
-        self._log.append("🏁 벤치마크 완료")
+        self._log.append("Benchmark complete.")
